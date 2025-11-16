@@ -1,0 +1,738 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Рейс 245: Железное Сердце</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0d1117;
+            color: #c9d1d9;
+        }
+        .text-neon {
+            color: #00ffc4;
+            text-shadow: 0 0 5px #00ffc4, 0 0 10px #00ffc4;
+        }
+        .btn-primary {
+            transition: all 0.1s ease;
+            background-color: #00ffc4;
+            color: #161b22;
+            font-weight: bold;
+            box-shadow: 0 4px #00a683;
+            border-radius: 0.5rem;
+        }
+        .btn-primary:hover:not(:disabled) {
+            box-shadow: 0 2px #00a683;
+            transform: translateY(2px);
+        }
+        .btn-primary:disabled {
+            box-shadow: none;
+            cursor: not-allowed;
+            background-color: #374151;
+            color: #9ca3af;
+            opacity: 0.6;
+            transform: translateY(0);
+        }
+        #log-area::-webkit-scrollbar { width: 6px; }
+        #log-area::-webkit-scrollbar-thumb { background-color: #00ffc450; border-radius: 3px; }
+        .timer-stress { animation: pulse-red 1s infinite alternate; }
+        @keyframes pulse-red {
+            from { color: #ff4d4d; text-shadow: 0 0 2px #ff4d4d; }
+            to { color: #ff0000; text-shadow: 0 0 10px #ff0000; }
+        }
+        .stat-item { flex-grow: 1; justify-content: center; padding: 0.25rem 0; min-width: 25%; }
+        @media (min-width: 768px) { .stat-item { justify-content: flex-start; padding: 0; } }
+    </style>
+</head>
+<body class="p-2 sm:p-4 md:p-8 min-h-screen">
+    <div id="game-container" class="max-w-4xl mx-auto bg-[#161b22] border border-gray-700 rounded-xl shadow-2xl">
+        <div id="stats-bar" class="flex flex-wrap md:flex-nowrap justify-between p-3 md:p-4 border-b border-gray-700 text-sm font-semibold">
+            <div id="lives-display" class="stat-item text-red-400">❤️ Жизни: 5</div>
+            <div id="chips-display" class="stat-item text-yellow-400">Чипы: 0</div>
+            <div id="moral-display" class="stat-item text-indigo-400">Мораль: 10</div>
+            <div id="time-display" class="stat-item text-neon">⏱️ Время: 01:00:00</div>
+        </div>
+        <div class="md:flex">
+            <div class="md:w-3/5 p-4 md:p-8 border-b md:border-b-0 md:border-r border-gray-700">
+                <h2 class="text-2xl font-extrabold mb-4 text-neon"><span id="step-key"></span></h2>
+                <div id="step-text" class="text-lg leading-relaxed mb-6 whitespace-pre-line">Загрузка данных...</div>
+                <div id="choices-container" class="space-y-4"></div>
+                <div id="puzzle-input-container" class="mt-6 hidden">
+                    <p id="puzzle-hint" class="text-sm text-gray-400 mb-2"></p>
+                    <div class="flex space-x-2">
+                        <input type="text" id="puzzle-input" class="flex-grow p-3 rounded-lg bg-[#0d1117] border border-gray-600 focus:ring-neon focus:border-neon text-white" placeholder="Введите ответ...">
+                        <button id="puzzle-button" class="btn-primary py-3 px-6 rounded-lg whitespace-nowrap">ОТВЕТ</button>
+                    </div>
+                    <p id="puzzle-message" class="mt-2 text-sm font-semibold"></p>
+                    <div id="step-timer-display" class="mt-4 text-center text-xl font-mono timer-stress hidden"></div>
+                </div>
+            </div>
+            <div class="md:w-2/5 p-4 md:p-8">
+                <h3 class="text-xl font-bold mb-4 border-b border-gray-700 pb-2 text-neon">Журнал Рейса 245</h3>
+                <div id="log-area" class="h-64 md:h-96 overflow-y-auto space-y-3 text-sm pr-2">
+                    <div class="text-gray-500">Система активирована. Ожидание первого сценария.</div>
+                </div>
+            </div>
+        </div>
+        <div id="final-screen" class="hidden fixed inset-0 bg-[#161b22]/95 backdrop-blur-sm flex flex-col items-center justify-center p-8 rounded-xl z-10">
+            <h1 id="final-title" class="text-5xl font-extrabold mb-4 text-red-500">КОНЕЦ ИГРЫ</h1>
+            <p id="final-text" class="text-xl text-center mb-8"></p>
+            <p id="final-stats" class="text-lg font-mono"></p>
+            <button onclick="location.reload()" class="mt-8 btn-primary font-bold py-3 px-6 rounded-lg">НАЧАТЬ СНОВА</button>
+        </div>
+    </div>
+    <script>
+        const Effect = (lives, bonuses, moral, time) => ({ lives, bonuses, moral, time });
+        const Choice = (text, next, requiredBonus = 0, effect) => ({ text, next, requiredBonus, effect });
+        const Step = (key, text, type, config = {}) => ({
+            key, text, type,
+            correctAnswer: config.correctAnswer || null,
+            correctAnswerBool: config.correctAnswerBool || false,
+            successNext: config.successNext || null,
+            failureNext: config.failureNext || null, 
+            choices: config.choices || null,
+            timeLimit: config.timeLimit || 0
+        });
+
+        const SECONDS_IN_HOUR = 3600;
+        const INITIAL_TIME_LIMIT_SECONDS = 1 * SECONDS_IN_HOUR; 
+
+        // Сценарий Квеста
+        const QUEST_STEPS = {
+            // ====================================================================
+            // START HUB (2 branches)
+            // ====================================================================
+            "start": Step("start", 
+                "Ты резко открываешь глаза. Вокруг — искореженный металл, пыль и неоновый свет. В висках стучит, имплант на руке горит тусклым синим. Голос в голове, принадлежащий **Агенту Коди** (Центральная Разведка, твой куратор): *«Рейс 245. Бункер Аврора. Задачу помнишь».* Впереди два пути, каждый обещает свою цену.", "start_scenario", 
+                {
+                    choices: [
+                        Choice("Ветка А: Через Заброшенную Лабораторию Генезис (Осторожный, много головоломок)", "lab_q1"),
+                        Choice("Ветка В: Через Подземный Паркинг Катализатор (Рискованный, много штрафов)", "parking_q1")
+                    ]
+                }
+            ),
+
+            // ====================================================================
+            // ВЕТКА А: ЛАБОРАТОРИЯ ГЕНЕЗИС (6 Qs) - Локация 1/7
+            // ====================================================================
+            "lab_q1": Step("lab_q1", "ЛАБОРАТОРИЯ ГЕНЕЗИС. Главный терминал заблокирован. **СЛОТ 1 (Логика):** Что может путешествовать по воде, но никогда не приземляется?", "logic_puzzle", { correctAnswer: "эхо", successNext: "lab_q2" }), 
+            "lab_q2": Step("lab_q2", "ЛАБОРАТОРИЯ ГЕНЕЗИС. **СЛОТ 2 (Верю/Не Верю):** Верно ли, что в 1947 году ЦРУ использовало мертвых котов с имплантами для прослушивания?", "believe", { correctAnswerBool: false, successNext: "lab_q3" }),
+            "lab_q3": Step("lab_q3", "ЛАБОРАТОРИЯ ГЕНЕЗИС. **СЛОТ 3 (Логика):** У меня есть города, но нет домов, горы, но нет деревьев, и вода, но нет рыбы. Что я?", "logic_puzzle", { correctAnswer: "карта", successNext: "lab_q4" }),
+            "lab_q4": Step("lab_q4", "ЛАБОРАТОРИЯ ГЕНЕЗИС. **СЛОТ 4 (Верю/Не Верю):** Верно ли, что человеческий глаз способен различать около 10 миллионов различных цветов?", "believe", { correctAnswerBool: true, successNext: "lab_q5" }),
+            "lab_q5": Step("lab_q5", "ЛАБОРАТОРИЯ ГЕНЕЗИС. **СЛОТ 5 (Логика):** Я всегда голоден, и если меня не кормить, я умираю. У меня нет рта и легких. Что я?", "logic_puzzle", { correctAnswer: "огонь", successNext: "lab_q6" }),
+            "lab_q6": Step("lab_q6", "ЛАБОРАТОРИЯ ГЕНЕЗИС. **СЛОТ 6 (Верю/Не Верю):** Верно ли, что пауки - насекомые?", "believe", { correctAnswerBool: false, successNext: "lab_mid_start" }),
+
+            // LAB MID (6 Qs) - Локация 2/7
+            "lab_mid_start": Step("lab_mid_start",
+                "Дверь открыта. Ты в Главном Отсеке Обработки Данных. Найдена старая Крио-Капсула. Для получения данных нужно решить новый код.",
+                "decision_scenario",
+                {
+                    choices: [
+                        Choice("Начать взлом Крио-Системы", "lab_mid_q1", 0, Effect(0, 0, 0, -60)), 
+                        Choice("Попытаться пройти мимо (Риск: -1 Жизнь)", "baron_q1", 0, Effect(-1, 0, 0, -120))
+                    ]
+                }
+            ),
+            "lab_mid_q1": Step("lab_mid_q1", "КРИО-СИСТЕМА. **КОД 1 (Логика):** Если ты уронишь меня, я сломаюсь, но если ты улыбнешься мне, я улыбнусь тебе. Что я?", "logic_puzzle", { correctAnswer: "зеркало", successNext: "lab_mid_q2" }),
+            "lab_mid_q2": Step("lab_mid_q2", "КРИО-СИСТЕМА. **КОД 2 (Верю/Не Верю):** Верно ли, что человеческий скелет обновляется каждые 7-10 лет?", "believe", { correctAnswerBool: true, successNext: "lab_mid_q3" }),
+            "lab_mid_q3": Step("lab_mid_q3", "КРИО-СИСТЕМА. **КОД 3 (Логика):** Какой вопрос ты никогда не сможешь задать, ответив 'Да'?", "logic_puzzle", { correctAnswer: "ты спишь", successNext: "lab_mid_q4" }),
+            "lab_mid_q4": Step("lab_mid_q4", "КРИО-СИСТЕМА. **КОД 4 (Верю/Не Верю):** Верно ли, что на Марсе есть гора, которая в три раза выше Эвереста?", "believe", { correctAnswerBool: true, successNext: "lab_mid_q5" }),
+            "lab_mid_q5": Step("lab_mid_q5", "КРИО-СИСТЕМА. **КОД 5 (Логика):** У меня есть шея, но нет головы. Что я?", "logic_puzzle", { correctAnswer: "бутылка", successNext: "lab_mid_q6" }),
+            "lab_mid_q6": Step("lab_mid_q6", "КРИО-СИСТЕМА. **КОД 6 (Верю/Не Верю):** Верно ли, что древние римляне добавляли свинец в вино для его подслащивания?", "believe", { correctAnswerBool: true, successNext: "baron_q1" }),
+
+            // ====================================================================
+            // ВЕТКА В: ПАРКИНГ КАТАЛИЗАТОР (6 Qs) - Локация 1/7
+            // ====================================================================
+            "parking_q1": Step("parking_q1", "ПАРКИНГ КАТАЛИЗАТОР. Аварийный генератор заблокирован. **ЗОНА 1 (Логика):** Я говорю без рта и слышу без ушей. У меня нет тела, но я оживаю с ветром. Что я?", "logic_puzzle", { correctAnswer: "эхо", successNext: "parking_q2" }), 
+            "parking_q2": Step("parking_q2", "ПАРКИНГ КАТАЛИЗАТОР. **ЗОНА 2 (Верю/Не Верю):** Верно ли, что в Древнем Риме после победы полководца ему полагался раб, который должен был шептать *Memento mori*?", "believe", { correctAnswerBool: true, successNext: "parking_q3" }),
+            "parking_q3": Step("parking_q3", "ПАРКИНГ КАТАЛИЗАТОР. **ЗОНА 3 (Логика):** Я всегда иду спать с башмаками, но никогда не сплю. Что я?", "logic_puzzle", { correctAnswer: "лошадь", successNext: "parking_q4" }),
+            "parking_q4": Step("parking_q4", "ПАРКИНГ КАТАЛИЗАТОР. **ЗОНА 4 (Верю/Не Верю):** Верно ли, что пчелы используют танец для передачи информации о местонахождении источников пищи?", "believe", { correctAnswerBool: true, successNext: "parking_q5" }),
+            "parking_q5": Step("parking_q5", "ПАРКИНГ КАТАЛИЗАТОР. **ЗОНА 5 (Логика):** Если у меня есть, я делюсь. Если я делюсь, у меня больше нет. Что я?", "logic_puzzle", { correctAnswer: "секрет", successNext: "parking_q6" }),
+            "parking_q6": Step("parking_q6", "ПАРКИНГ КАТАЛИЗАТОР. **ЗОНА 6 (Верю/Не Верю):** Верно ли, что Венера вращается вокруг Солнца в противоположную сторону по сравнению с большинством планет?", "believe", { correctAnswerBool: true, successNext: "parking_mid_start" }),
+
+            // PARKING MID (6 Qs) - Локация 2/7
+            "parking_mid_start": Step("parking_mid_start",
+                "ГЕНЕРАТОР ЗАПУЩЕН. Ты в Зоне Ремонта Транспорта. Тут стоит заблокированный грузовой отсек с припасами. Чтобы его открыть, нужен код.",
+                "decision_scenario",
+                {
+                    choices: [
+                        Choice("Начать взлом грузового отсека", "parking_mid_q1"),
+                        Choice("Попытаться открыть силой (Риск: -1 Жизнь, -100 сек)", "baron_q1", 0, Effect(-1, 0, 0, -100))
+                    ]
+                }
+            ),
+            "parking_mid_q1": Step("parking_mid_q1", "ГРУЗОВОЙ ОТСЕК. **КОД 1 (Логика):** Что всегда увеличивается и никогда не уменьшается?", "logic_puzzle", { correctAnswer: "возраст", successNext: "parking_mid_q2" }),
+            "parking_mid_q2": Step("parking_mid_q2", "ГРУЗОВОЙ ОТСЕК. **КОД 2 (Верю/Не Верю):** Верно ли, что у жирафов такой же длинный язык, как у человека предплечье?", "believe", { correctAnswerBool: true, successNext: "parking_mid_q3" }),
+            "parking_mid_q3": Step("parking_mid_q3", "ГРУЗОВОЙ ОТСЕК. **КОД 3 (Логика):** Я могу быть сломан, но у меня нет частей. Что я?", "logic_puzzle", { correctAnswer: "сердце", successNext: "parking_mid_q4" }),
+            "parking_mid_q4": Step("parking_mid_q4", "ГРУЗОВОЙ ОТСЕК. **КОД 4 (Верю/Не Верю):** Верно ли, что на Земле больше деревьев, чем звезд в Млечном Пути?", "believe", { correctAnswerBool: true, successNext: "parking_mid_q5" }),
+            "parking_mid_q5": Step("parking_mid_q5", "ГРУЗОВОЙ ОТСЕК. **КОД 5 (Логика):** Без меня ты ничего не стоишь. Что я?", "logic_puzzle", { correctAnswer: "имя", successNext: "parking_mid_q6" }),
+            "parking_mid_q6": Step("parking_mid_q6", "ГРУЗОВОЙ ОТСЕК. **КОД 6 (Верю/Не Верю):** Верно ли, что знаменитый пират Черная Борода добавлял в свою бороду тлеющие фитили, чтобы устрашать врагов?", "believe", { correctAnswerBool: true, successNext: "baron_q1" }),
+
+            // ====================================================================
+            // ХАБ 1.5: ВСТРЕЧА С БАРОНОМ (6 Qs) - Локация 3/7
+            // ====================================================================
+            "baron_q1": Step("baron_q1",
+                "АНГАР 7. В свете фонаря видна массивная фигура **БАРОНА** (легендарный сборщик чипов). Он загораживает путь. *\"Либо плати, либо доказывай свою цену через 6 фактов старого мира. Неверный ответ — лом в твои шестеренки!\"*", 
+                "start_scenario",
+                {
+                    choices: [
+                        Choice("Начать проверку: 6 Фактов", "baron_task_1"),
+                        Choice("Отдать 4 Чипа за проход (Дорого!)", "city_outskirts_junction", 4, Effect(0, -4, 0, 0))
+                    ]
+                }
+            ),
+            "baron_task_1": Step("baron_task_1", "ТЕСТ БАРОНА. **ФАКТ 1 (Верю/Не Верю):** Верно ли, что во время средневековья люди действительно строили специальные выступы — *Гардеробы* — прямо над рвом замка?", "believe", { correctAnswerBool: true, successNext: "baron_task_2" }),
+            "baron_task_2": Step("baron_task_2", "ТЕСТ БАРОНА. **ФАКТ 2 (Логика):** Если бы ты бросил меня с высокого здания, я бы выжил. Если бы ты бросил меня в воду, я бы умер. Что я?", "logic_puzzle", { correctAnswer: "бумага", successNext: "baron_task_3" }),
+            "baron_task_3": Step("baron_task_3", "ТЕСТ БАРОНА. **ФАКТ 3 (Верю/Не Верю):** Верно ли, что самый долгий полет курицы длился всего 13 секунд?", "believe", { correctAnswerBool: true, successNext: "baron_task_4" }),
+            "baron_task_4": Step("baron_task_4", "ТЕСТ БАРОНА. **ФАКТ 4 (Логика):** У меня есть кольца, но я не ношу украшений. Я могу быть холодной или горячей. Что я?", "logic_puzzle", { correctAnswer: "планета", successNext: "baron_task_5" }),
+            "baron_task_5": Step("baron_task_5", "ТЕСТ БАРОНА. **ФАКТ 5 (Верю/Не Верю):** Верно ли, что в космосе нельзя плакать, потому что слезы не будут течь?", "believe", { correctAnswerBool: true, successNext: "baron_task_6" }),
+            "baron_task_6": Step("baron_task_6", "ТЕСТ БАРОНА. **ФАКТ 6 (Логика):** У меня нет голоса, но я могу рассказать тебе историю. Что я?", "logic_puzzle", { correctAnswer: "книга", successNext: "baron_success" }),
+            "baron_success": Step("baron_success",
+                "Барон кивает: *\"Ты знаешь, что тебе нужно знать. Проходи. Возьми это, может, пригодится. Я не злой, просто... осторожный.\"* (+2 Чипа, +1 Мораль)",
+                "decision_scenario",
+                {
+                    choices: [
+                        Choice("Поблагодарить и идти дальше", "city_outskirts_junction", 0, Effect(0, 2, 1, 0))
+                    ]
+                }
+            ),
+
+            // ====================================================================
+            // ХАБ 2: ОКРАИНА ГОРОДА (2 branches)
+            // ====================================================================
+            "city_outskirts_junction": Step("city_outskirts_junction",
+                "Ты выбрался на окраину. Слева — темный, затопленный спуск в **Технические Тоннели** (путь помощи). Справа — высокая, одинокая башня **Диспетчерского Пункта** (путь взлома).",
+                "start_scenario",
+                {
+                    choices: [
+                        Choice("Ветка C: Технические Тоннели (Гуманность, Доктор Элис)", "tunnels_q1"),
+                        Choice("Ветка D: Диспетчерский Пункт (Цифры, ИИ Орион)", "control_q1")
+                    ]
+                }
+            ),
+
+            // ====================================================================
+            // ВЕТКА C: ТЕХНИЧЕСКИЕ ТОННЕЛИ (6 Qs) - Локация 4/7
+            // ====================================================================
+            "tunnels_q1": Step("tunnels_q1", "ТЕХНИЧЕСКИЕ ТОННЕЛИ. **Доктор Элис** (забытый медик) ранена. Нужно открыть ее чемодан. **ОТСЕК 1 (Логика):** У меня есть голова и хвост, но нет тела. Что я?", "logic_puzzle", { correctAnswer: "монета", successNext: "tunnels_q2" }), 
+            "tunnels_q2": Step("tunnels_q2", "ТЕХНИЧЕСКИЕ ТОННЕЛИ. **ОТСЕК 2 (Верю/Не Верю):** Верно ли, что Эверест является самой высокой горой на Земле, если измерять ее от подножия до вершины?", "believe", { correctAnswerBool: false, successNext: "tunnels_q3" }),
+            "tunnels_q3": Step("tunnels_q3", "ТЕХНИЧЕСКИЕ ТОННЕЛИ. **ОТСЕК 3 (Логика):** Что ломается, если ты не произносишь это?", "logic_puzzle", { correctAnswer: "молчание", successNext: "tunnels_q4" }),
+            "tunnels_q4": Step("tunnels_q4", "ТЕХНИЧЕСКИЕ ТОННЕЛИ. **ОТСЕК 4 (Верю/Не Верю):** Верно ли, что в средневековой Европе существовали законы, запрещающие крестьянам носить одежду определенных цветов?", "believe", { correctAnswerBool: true, successNext: "tunnels_q5" }),
+            "tunnels_q5": Step("tunnels_q5", "ТЕХНИЧЕСКИЕ ТОННЕЛИ. **ОТСЕК 5 (Логика):** Какой день недели всегда находится на втором месте?", "logic_puzzle", { correctAnswer: "завтра", successNext: "tunnels_q6" }),
+            "tunnels_q6": Step("tunnels_q6", "ТЕХНИЧЕСКИЕ ТОННЕЛИ. **ОТСЕК 6 (Верю/Не Верю):** Верно ли, что у улиток может вырасти до 14 000 зубов?", "believe", { correctAnswerBool: true, successNext: "tunnels_mid_start" }),
+
+            // TUNNELS MID (6 Qs) - Локация 5/7
+            "tunnels_mid_start": Step("tunnels_mid_start",
+                "Доктор Элис в безопасности (+5 Мораль). Ты в насосной станции. Чтобы пройти быстро, нужно перезапустить систему фильтрации.",
+                "decision_scenario",
+                {
+                    choices: [
+                        Choice("Начать перезапуск фильтрации", "tunnels_mid_q1", 0, Effect(0, 0, 5, 0)), 
+                        Choice("Пройти пешком через воду (Риск: -120 сек)", "zig_q1", 0, Effect(0, 0, 0, -120))
+                    ]
+                }
+            ),
+            "tunnels_mid_q1": Step("tunnels_mid_q1", "НАСОСНАЯ СТАНЦИЯ. **КОД 1 (Логика):** Я могу быть теплым, но не жаром. Я могу быть полным, но не чашей. Что я?", "logic_puzzle", { correctAnswer: "душ", successNext: "tunnels_mid_q2" }),
+            "tunnels_mid_q2": Step("tunnels_mid_q2", "НАСОСНАЯ СТАНЦИЯ. **КОД 2 (Верю/Не Верю):** Верно ли, что у китов-горбачей один из самых громких голосов в животном мире?", "believe", { correctAnswerBool: true, successNext: "tunnels_mid_q3" }),
+            "tunnels_mid_q3": Step("tunnels_mid_q3", "НАСОСНАЯ СТАНЦИЯ. **КОД 3 (Логика):** Что всегда идет, но никогда не достигает цели?", "logic_puzzle", { correctAnswer: "время", successNext: "tunnels_mid_q4" }),
+            "tunnels_mid_q4": Step("tunnels_mid_q4", "НАСОСНАЯ СТАНЦИЯ. **КОД 4 (Верю/Не Верю):** Верно ли, что самый старый известный рецепт в мире — это рецепт пива?", "believe", { correctAnswerBool: true, successNext: "tunnels_mid_q5" }),
+            "tunnels_mid_q5": Step("tunnels_mid_q5", "НАСОСНАЯ СТАНЦИЯ. **КОД 5 (Логика):** Я могу быть выращен, но я не растение. Что я?", "logic_puzzle", { correctAnswer: "ребенок", successNext: "tunnels_mid_q6" }),
+            "tunnels_mid_q6": Step("tunnels_mid_q6", "НАСОСНАЯ СТАНЦИЯ. **КОД 6 (Верю/Не Верю):** Верно ли, что до XVII века морковь была фиолетовой?", "believe", { correctAnswerBool: true, successNext: "zig_q1" }),
+
+            // ====================================================================
+            // ВЕТКА D: ДИСПЕТЧЕРСКИЙ ПУНКТ (6 Qs) - Локация 4/7
+            // ====================================================================
+            "control_q1": Step("control_q1", "ДИСПЕТЧЕРСКИЙ ПУНКТ. Голос **ИИ Орион** (безжалостный ИИ-контролер): *\"Несанкционированный доступ. Идентифицируйте себя через 6 протоколов.\"* **ПРОТОКОЛ 1 (Логика):** Я могу быть полным, но я ничего не держу. Что я?", "logic_puzzle", { correctAnswer: "луна", successNext: "control_q2" }),
+            "control_q2": Step("control_q2", "ДИСПЕТЧЕРСКИЙ ПУНКТ. **ПРОТОКОЛ 2 (Верю/Не Верю):** Верно ли, что созвездие Орион действительно использовалось древними моряками для навигации?", "believe", { correctAnswerBool: true, successNext: "control_q3" }),
+            "control_q3": Step("control_q3", "ДИСПЕТЧЕРСКИЙ ПУНКТ. **ПРОТОКОЛ 3 (Логика):** Без меня нет жизни, без меня нет цвета. Я никогда не был замечен. Что я?", "logic_puzzle", { correctAnswer: "свет", successNext: "control_q4" }),
+            "control_q4": Step("control_q4", "ДИСПЕТЧЕРСКИЙ ПУНКТ. **ПРОТОКОЛ 4 (Верю/Не Верю):** Верно ли, что в Древнем Египте за убийство кошки (священное животное) наказанием всегда была смертная казнь?", "believe", { correctAnswerBool: true, successNext: "control_q5" }),
+            "control_q5": Step("control_q5", "ДИСПЕТЧЕРСКИЙ ПУНКТ. **ПРОТОКОЛ 5 (Логика):** У меня нет крыльев, но я могу летать. Что я?", "logic_puzzle", { correctAnswer: "время", successNext: "control_q6" }),
+            "control_q6": Step("control_q6", "ДИСПЕТЧЕРСКИЙ ПУНКТ. **ПРОТОКОЛ 6 (Верю/Не Верю):** Верно ли, что у ИИ Орион в системе зарезервировано 100 эксабайт данных?", "believe", { correctAnswerBool: false, successNext: "control_mid_start" }), 
+
+            // CONTROL MID (6 Qs) - Локация 5/7
+            "control_mid_start": Step("control_mid_start",
+                "ИИ Орион открыл доступ к Главному Спутнику. Чтобы получить данные о пути, нужно перенастроить частоту через 6 кодовых слов.",
+                "decision_scenario",
+                {
+                    choices: [
+                        Choice("Начать перенастройку частоты", "control_mid_q1", 0, Effect(0, 1, 0, 0)),
+                        Choice("Спуститься по аварийному кабелю (Риск: -1 Жизнь, -100 сек)", "zig_q1", 0, Effect(-1, 0, 0, -100))
+                    ]
+                }
+            ),
+            "control_mid_q1": Step("control_mid_q1", "СПУТНИКОВЫЙ ЛИНК. **КОД 1 (Логика):** У меня есть один глаз, но я не вижу. Что я?", "logic_puzzle", { correctAnswer: "игла", successNext: "control_mid_q2" }),
+            "control_mid_q2": Step("control_mid_q2", "СПУТНИКОВЫЙ ЛИНК. **КОД 2 (Верю/Не Верю):** Верно ли, что в год на Землю падает около 15 000 тонн метеоритного материала?", "believe", { correctAnswerBool: true, successNext: "control_mid_q3" }),
+            "control_mid_q3": Step("control_mid_q3", "СПУТНИКОВЫЙ ЛИНК. **КОД 3 (Логика):** У меня есть ключи, но нет замков. У меня есть пробелы, но нет места. Что я?", "logic_puzzle", { correctAnswer: "клавиатура", successNext: "control_mid_q4" }),
+            "control_mid_q4": Step("control_mid_q4", "СПУТНИКОВЫЙ ЛИНК. **КОД 4 (Верю/Не Верю):** Верно ли, что в среднем человек забывает 90% своих снов?", "believe", { correctAnswerBool: true, successNext: "control_mid_q5" }),
+            "control_mid_q5": Step("control_mid_q5", "СПУТНИКОВЫЙ ЛИНК. **КОД 5 (Логика):** Ты можешь держать меня, но я не могу быть тронут. Что я?", "logic_puzzle", { correctAnswer: "обещание", successNext: "control_mid_q6" }),
+            "control_mid_q6": Step("control_mid_q6", "СПУТНИКОВЫЙ ЛИНК. **КОД 6 (Верю/Не Верю):** Верно ли, что звук быстрее света?", "believe", { correctAnswerBool: false, successNext: "zig_q1" }),
+
+            // ====================================================================
+            // ХАБ 3: ТОРГОВЕЦ ЗИГ (6 Qs) - Локация 6/7
+            // ====================================================================
+            "zig_q1": Step("zig_q1",
+                "ЗАЛ СОЕДИНЕНИЙ. Ты видишь **Торговца Зига** (старый киборг-мошенник). Он не пропустит тебя, пока ты не докажешь, что знаешь цену товару. Он дает 6 загадок, за каждую ошибку он забирает 1 Чип.",
+                "start_scenario",
+                {
+                    choices: [
+                        Choice("Начать: Проверка ценности (6 Загадок)", "zig_task_1"),
+                        Choice("Заплатить 5 Чипов и пройти", "final_branch_selector", 5, Effect(0, -5, 0, 0))
+                    ]
+                }
+            ),
+            "zig_task_1": Step("zig_task_1", "ТЕСТ ЗИГА. **ЗАГАДКА 1 (Логика):** Я всегда мокрый, но меня не утопить. Что я?", "logic_puzzle", { correctAnswer: "полотенце", successNext: "zig_task_2" }), 
+            "zig_task_2": Step("zig_task_2", "ТЕСТ ЗИГА. **ЗАГАДКА 2 (Верю/Не Верю):** Верно ли, что сердце креветки находится в её голове?", "believe", { correctAnswerBool: true, successNext: "zig_task_3" }),
+            "zig_task_3": Step("zig_task_3", "ТЕСТ ЗИГА. **ЗАГАДКА 3 (Логика):** У меня есть деньги, но я не богат. Что я?", "logic_puzzle", { correctAnswer: "кошелек", successNext: "zig_task_4" }),
+            "zig_task_4": Step("zig_task_4", "ТЕСТ ЗИГА. **ЗАГАДКА 4 (Верю/Не Верю):** Верно ли, что существует больше возможных партий в шахматы, чем атомов во вселенной?", "believe", { correctAnswerBool: true, successNext: "zig_task_5" }),
+            "zig_task_5": Step("zig_task_5", "ТЕСТ ЗИГА. **ЗАГАДКА 5 (Логика):** Я могу быть создан и сломан, но меня нельзя увидеть. Что я?", "logic_puzzle", { correctAnswer: "договор", successNext: "zig_task_6" }),
+            "zig_task_6": Step("zig_task_6", "ТЕСТ ЗИГА. **ЗАГАДКА 6 (Верю/Не Верю):** Верно ли, что лед, сделанный из горячей воды, замерзает быстрее, чем лед, сделанный из холодной воды (эффект Мпембы)?", "believe", { correctAnswerBool: true, successNext: "zig_success" }),
+
+            "zig_success": Step("zig_success",
+                "Зиг: *\"Хорошо. Проходи, агент. Ты заработал мой респект.\"*",
+                "decision_scenario",
+                {
+                    choices: [
+                        Choice("Продолжить путь", "final_branch_selector", 0, Effect(0, 0, 2, 0))
+                    ]
+                }
+            ),
+
+            // ====================================================================
+            // ФИНАЛЬНЫЙ СЕЛЕКТОР (Archives OR Elevator)
+            // ====================================================================
+            "final_branch_selector": Step("final_branch_selector",
+                "ПОСЛЕДНЯЯ ВЕТКА. Ты должен выбрать, как добраться до главного Бункера Аврора. Слева — **Архивы** (долгий путь, много знаний), справа — **Служебный Лифт** (быстрый, но рискованный).",
+                "start_scenario",
+                {
+                    choices: [
+                        Choice("Ветка E: Архивы Бункера (Хранитель)", "archives_q1"),
+                        Choice("Ветка F: Служебный Лифт (Скорость)", "elevator_q1")
+                    ]
+                }
+            ),
+
+            // ====================================================================
+            // ВЕТКА E: АРХИВЫ БУНКЕРА (6 Qs) - Локация 7/7
+            // ====================================================================
+            "archives_q1": Step("archives_q1", "АРХИВЫ. Голограмма **ХРАНИТЕЛЯ АРХИВОВ** (древний ИИ). *\"Ответьте на 6 вопросов о старом мире. За каждую ошибку -5 Морали.\"* **Вопрос 1 (Логика):** Что поднимает камень на 10 этажей, но не может поднять даже крошечный камешек?", "logic_puzzle", { correctAnswer: "лифт", successNext: "archives_q2" }), 
+            "archives_q2": Step("archives_q2", "АРХИВЫ. **Вопрос 2 (Верю/Не Верю):** Верно ли, что Великая Китайская стена — это единственный искусственный объект, который видно невооруженным глазом из космоса?", "believe", { correctAnswerBool: false, successNext: "archives_q3" }),
+            "archives_q3": Step("archives_q3", "АРХИВЫ. **Вопрос 3 (Логика):** Я могу быть пустым или полным, но я всегда оставлю часть тебя. Что я?", "logic_puzzle", { correctAnswer: "воспоминание", successNext: "archives_q4" }),
+            "archives_q4": Step("archives_q4", "АРХИВЫ. **Вопрос 4 (Верю/Не Верю):** Верно ли, что римский император Калигула действительно сделал своего коня сенатором?", "believe", { correctAnswerBool: false, successNext: "archives_q5" }),
+            "archives_q5": Step("archives_q5", "АРХИВЫ. **Вопрос 5 (Логика):** Я всегда рядом, но меня никогда не найти. Что я?", "logic_puzzle", { correctAnswer: "завтра", successNext: "archives_q6" }),
+            "archives_q6": Step("archives_q6", "АРХИВЫ. **Вопрос 6 (Верю/Не Верю):** Верно ли, что светлячки - это жуки?", "believe", { correctAnswerBool: true, successNext: "final_branch_resolver" }),
+
+            // ====================================================================
+            // ВЕТКА F: СЛУЖЕБНЫЙ ЛИФТ (6x Speed Quiz) - Локация 7/7
+            // ====================================================================
+            "elevator_q1": Step("elevator_q1", "СЛУЖЕБНЫЙ ЛИФТ. Аварийная блокировка. Нужно быстро ввести 6 кодов! **КОД 1 (СКОРОСТЬ):** Введи следующее число в ряду (квадраты): 1, 4, 9, 16, [?], 36. У вас 15 секунд.", "speed_quiz", { correctAnswer: "25", successNext: "elevator_q2", failureNext: "elevator_failure" , timeLimit: 15 }),
+            "elevator_q2": Step("elevator_q2", "СЛУЖЕБНЫЙ ЛИФТ. **КОД 2 (СКОРОСТЬ):** Введи следующее число в ряду (на 3 больше): 2, 5, 8, [?], 14. У вас 15 секунд.", "speed_quiz", { correctAnswer: "11", successNext: "elevator_q3", failureNext: "elevator_failure" , timeLimit: 15 }),
+            "elevator_q3": Step("elevator_q3", "СЛУЖЕБНЫЙ ЛИФТ. **КОД 3 (СКОРОСТЬ):** Введи результат: 2 * 3 * 7 = [?]. У вас 10 секунд.", "speed_quiz", { correctAnswer: "42", successNext: "elevator_q4", failureNext: "elevator_failure" , timeLimit: 10 }),
+            "elevator_q4": Step("elevator_q4", "СЛУЖЕБНЫЙ ЛИФТ. **КОД 4 (СКОРОСТЬ):** Введи результат: 100 / 4 + 5 = [?]. У вас 10 секунд.", "speed_quiz", { correctAnswer: "30", successNext: "elevator_q5", failureNext: "elevator_failure" , timeLimit: 10 }),
+            "elevator_q5": Step("elevator_q5", "СЛУЖЕБНЫЙ ЛИФТ. **КОД 5 (СКОРОСТЬ):** Введи следующее число в ряду (фибоначчи): 1, 1, 2, 3, 5, [?]. У вас 15 секунд.", "speed_quiz", { correctAnswer: "8", successNext: "elevator_q6", failureNext: "elevator_failure" , timeLimit: 15 }),
+            "elevator_q6": Step("elevator_q6", "СЛУЖЕБНЫЙ ЛИФТ. **КОД 6 (СКОРОСТЬ):** Введи результат: 11 * 11 = [?]. У вас 10 секунд.", "speed_quiz", { correctAnswer: "121", successNext: "elevator_success", failureNext: "elevator_failure" , timeLimit: 10 }),
+
+            "elevator_failure": Step("elevator_failure", "ЛИФТ ОСТАНОВИЛСЯ. Аварийная блокировка! (-1 Жизнь, -180 сек)", "decision_scenario", { choices: [Choice("Продолжить путь через пролом", "final_branch_resolver", 0, Effect(-1, 0, 0, -180))] }),
+            "elevator_success": Step("elevator_success",
+                "Лифт открыт. Ты видишь небольшую коробку с припасами. (+3 Чипа).",
+                "decision_scenario",
+                {
+                    choices: [
+                        Choice("Продолжить путь", "final_branch_resolver", 0, Effect(0, 3, 0, 0))
+                    ]
+                }
+            ),
+
+            // ====================================================================
+            // ФИНАЛЬНЫЙ АКТ (Resolution)
+            // ====================================================================
+            "final_branch_resolver": Step("final_branch_resolver",
+                "КРИТИЧЕСКИЙ КОРИДОР. Ты дошел до главного входа в Бункер Аврора. Твои предыдущие решения сформировали ключ доступа. \n***СИСТЕМА АНАЛИЗИРУЕТ МАРШРУТ.***",
+                "final_branch_selector",
+                {
+                    choices: [Choice("Активировать терминал", "final_task_G_or_H")]
+                }
+            ),
+            "final_task_G_start": Step("final_task_G_start",
+                "ВИРУСНАЯ УГРОЗА. (Оптимальный путь). Терминал показывает вспышку вирусной активности. У тебя один шанс ввести код нейтрализации!",
+                "start_scenario",
+                {
+                    choices: [Choice("Начать: Нейтрализация вируса (Скорость)", "final_task_G_1")]
+                }
+            ),
+            "final_task_G_1": Step("final_task_G_1", "**ФИНАЛЬНЫЙ КОД (СКОРОСТЬ)!** Введи недостающую букву в последовательности (алфавит): А, В, Г, [?], Ж, З. У вас 10 секунд.", "speed_quiz", { correctAnswer: "д", successNext: "final_check_moral", failureNext: "final_failure", timeLimit: 10 }),
+
+            "final_task_H_start": Step("final_task_H_start",
+                "АППАРАТНЫЙ СБОЙ. (Рискованный путь). Из-за твоих взломов в цепи питания критический сбой. Дверь начинает закрываться. Нужно быстро ввести код отмены блокировки!",
+                "start_scenario",
+                {
+                    choices: [Choice("Начать: Отмена блокировки (Скорость)", "final_task_H_1")]
+                }
+            ),
+            "final_task_H_1": Step("final_task_H_1", "**ФИНАЛЬНЫЙ КОД (СКОРОСТЬ)!** Введи следующее число в ряду: 1, 4, 9, 16, [?], 36. У вас 10 секунд.", "speed_quiz", { correctAnswer: "25", successNext: "final_check_moral", failureNext: "final_failure", timeLimit: 10 }),
+
+            // ====================================================================
+            // SHARED FINAL STEPS
+            // ====================================================================
+            "final_failure": Step("final_failure",
+                "Тяжелая стальная дверь опускается с грохотом, запечатывая выход. Ты теряешь драгоценное время.",
+                "decision_scenario",
+                {
+                    choices: [
+                        Choice("Попробовать снова (-180 сек)", "final_branch_resolver", 0, Effect(0, 0, 0, -180))
+                    ]
+                }
+            ),
+            "logic_failure_decision": null, 
+            "final_check_moral": Step("final_check_moral", "Дверь в Бункер открыта. Ты видишь консоль активации сигнала. Твой моральный рейтинг решит, кого ты позовешь... Начать протокол отправки сигнала...", "final_check_moral", { choices: [Choice("ОТПРАВИТЬ СИГНАЛ", "game_win")] }),
+            "game_win": Step("game_win", "Система Аврора: *«Сигнал отправлен. Спасательный корабль 'Надежда' прибывает через 10 минут. Вы выжили. Человечество будет жить. КОНЕЦ РЕЙСА 245.»*", "final_win"),
+            "game_over": Step("game_over", "Твои жизни исчерпаны, или время вышло. Имплант гаснет. Ты падаешь на колени, и чума настигает тебя. КОНЕЦ ИГРЫ.", "final_lose"),
+            "game_ending_bad": Step("game_ending_bad", "СИГНАЛ ОТПРАВЛЕН... Но из-за низкого Морального Рейтинга (меньше 5) ты вызвал не спасателей, а патруль, который забрал тебя в качестве подопытного. Ты спасся, но потерял свободу. КОНЕЦ ИГРЫ.", "final_lose"),
+        };
+
+        class GameEngine {
+            constructor() {
+                this.state = {
+                    currentStepKey: "start",
+                    lives: 5, bonuses: 0, moralScore: 10, timeLimit: INITIAL_TIME_LIMIT_SECONDS, 
+                    currentTime: INITIAL_TIME_LIMIT_SECONDS, startTime: Date.now() / 1000,
+                    timer: null, stepTimer: null, stepTimerInterval: null, stepTimeRemaining: 0,
+                    currentPuzzle: null, currentPuzzleSuccessNext: null, 
+                    routeHistory: { hub1: '', hub2: '' }
+                };
+                this.dom = {
+                    lives: document.getElementById('lives-display'), chips: document.getElementById('chips-display'),
+                    moral: document.getElementById('moral-display'), time: document.getElementById('time-display'),
+                    stepText: document.getElementById('step-text'), stepKey: document.getElementById('step-key'),
+                    choices: document.getElementById('choices-container'), puzzleContainer: document.getElementById('puzzle-input-container'),
+                    puzzleInput: document.getElementById('puzzle-input'), puzzleButton: document.getElementById('puzzle-button'),
+                    puzzleMessage: document.getElementById('puzzle-message'), puzzleHint: document.getElementById('puzzle-hint'),
+                    stepTimerDisplay: document.getElementById('step-timer-display'), logArea: document.getElementById('log-area'),
+                    finalScreen: document.getElementById('final-screen'), finalTitle: document.getElementById('final-title'),
+                    finalText: document.getElementById('final-text'), finalStats: document.getElementById('final-stats'),
+                };
+                this.dom.puzzleButton.addEventListener('click', () => this.handlePuzzleInput());
+                this.dom.puzzleInput.addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter') this.handlePuzzleInput();
+                });
+            }
+
+            getCurrentStep() {
+                if (this.state.currentStepKey === "logic_failure_decision" && this.state.currentPuzzle) {
+                    return this.getLogicFailureStep();
+                }
+                return QUEST_STEPS[this.state.currentStepKey];
+            }
+            
+            getLogicFailureStep() {
+                const isZigChallenge = this.state.currentPuzzle && this.state.currentPuzzle.startsWith('zig_');
+                const isArchivesChallenge = this.state.currentPuzzle && this.state.currentPuzzle.startsWith('archives_');
+
+                let moralPenalty = 0;
+                let chipPenalty = 0;
+                let penaltyText = "1 Мораль";
+
+                if (isZigChallenge) {
+                    chipPenalty = -1;
+                    penaltyText = "1 Чип (плата Зигу)";
+                } else if (isArchivesChallenge) {
+                    moralPenalty = -5;
+                    penaltyText = "5 Морали (гнев Хранителя)";
+                } else {
+                    moralPenalty = -1;
+                    penaltyText = "1 Мораль";
+                }
+
+                return Step("logic_failure_decision", 
+                    `**СИСТЕМА:** *\"НЕВЕРНО! Повторная попытка активирует штраф. Выберите, что вы готовы пожертвовать: ваше спокойствие (штраф: ${penaltyText}) или ваше тело (штраф: 1 Жизнь)?\"*`, 
+                    "decision_scenario", 
+                    {
+                        choices: [
+                            Choice(`Попробовать снова (Повтор, -${isZigChallenge ? '1 Чип' : isArchivesChallenge ? '5 Мораль' : '1 Мораль'})`, this.state.currentPuzzle, 0, Effect(0, chipPenalty, moralPenalty, 0)),
+                            Choice("Продолжить путь (Пропустить, -1 Жизнь)", this.state.currentPuzzleSuccessNext, 0, Effect(-1, 0, 0, 0))
+                        ]
+                    }
+                );
+            }
+
+            formatTime(totalSeconds) {
+                const s = Math.max(0, totalSeconds);
+                const h = Math.floor(s / 3600);
+                const m = Math.floor((s % 3600) / 60);
+                const sec = Math.floor(s % 60);
+                return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+            }
+
+            getElapsedTime() { return (Date.now() / 1000) - this.state.startTime; }
+
+            updateTime() {
+                const elapsedSeconds = this.getElapsedTime();
+                this.state.currentTime = this.state.timeLimit - elapsedSeconds;
+                this.dom.time.textContent = `⏱️ Время: ${this.formatTime(this.state.currentTime)}`;
+            }
+            
+            updateLog(message, isResult = false) {
+                const entry = document.createElement('div');
+                const timeStamp = this.formatTime(this.getElapsedTime());
+                entry.className = `p-2 rounded-lg ${isResult ? 'bg-[#00ffc41a] text-neon' : 'bg-[#1e242d] text-gray-300'}`;
+                entry.innerHTML = `<span class="font-bold mr-2 text-gray-500">${timeStamp}</span> ${message}`;
+                this.dom.logArea.appendChild(entry);
+                this.dom.logArea.scrollTop = this.dom.logArea.scrollHeight;
+            }
+
+            updateUI() {
+                this.state.lives = Math.max(0, this.state.lives);
+                this.state.bonuses = Math.max(0, this.state.bonuses);
+                this.state.moralScore = Math.max(0, this.state.moralScore);
+
+                this.dom.lives.textContent = `❤️ Жизни: ${this.state.lives}`;
+                this.dom.chips.textContent = `Чипы: ${this.state.bonuses}`;
+                this.dom.moral.textContent = `Мораль: ${this.state.moralScore}`;
+            }
+
+            checkGameOver() {
+                if (this.state.lives <= 0 || this.state.currentTime <= 0) {
+                    this.state.currentStepKey = "game_over";
+                    this.renderFinalScreen();
+                    return true;
+                }
+                return false;
+            }
+            
+            applyEffect(effect) {
+                this.state.lives += effect.lives;
+                this.state.bonuses += effect.bonuses;
+                this.state.moralScore += effect.moral;
+                this.state.timeLimit += effect.time; 
+                this.updateUI();
+                
+                let logMessage = "Изменение: ";
+                if (effect.lives !== 0) logMessage += `Жизни: ${effect.lives > 0 ? '+' : ''}${effect.lives}, `;
+                if (effect.bonuses !== 0) logMessage += `Чипы: ${effect.bonuses > 0 ? '+' : ''}${effect.bonuses}, `;
+                if (effect.moral !== 0) logMessage += `Мораль: ${effect.moral > 0 ? '+' : ''}${effect.moral}, `;
+                if (effect.time !== 0) {
+                     const timeChange = this.formatTime(Math.abs(effect.time));
+                     logMessage += `Время: ${effect.time > 0 ? `+${timeChange}` : `-${timeChange}`}, `;
+                }
+                
+                if (logMessage.endsWith(', ')) { this.updateLog(logMessage.slice(0, -2), true); }
+                this.checkGameOver();
+            }
+
+            clearStepTimer() {
+                if (this.state.stepTimer) clearTimeout(this.state.stepTimer);
+                if (this.state.stepTimerInterval) clearInterval(this.state.stepTimerInterval);
+                this.state.stepTimer = null;
+                this.state.stepTimerInterval = null;
+                this.dom.stepTimerDisplay.classList.add('hidden');
+            }
+
+            goToNextStep(nextStepKey) {
+                if (this.checkGameOver()) return;
+                this.clearStepTimer();
+                
+                if (nextStepKey !== "logic_failure_decision" && nextStepKey !== this.state.currentPuzzle) {
+                    this.state.currentPuzzle = null;
+                    this.state.currentPuzzleSuccessNext = null;
+                }
+                
+                if (nextStepKey.startsWith("lab_")) { this.state.routeHistory.hub1 = 'lab'; } 
+                else if (nextStepKey.startsWith("parking_")) { this.state.routeHistory.hub1 = 'parking'; } 
+                else if (nextStepKey.startsWith("tunnels_")) { this.state.routeHistory.hub2 = 'tunnels'; } 
+                else if (nextStepKey.startsWith("control_")) { this.state.routeHistory.hub2 = 'control'; }
+
+                this.state.currentStepKey = nextStepKey;
+                this.renderStep();
+            }
+
+            handleChoice(choiceIndex) {
+                const current = this.getCurrentStep();
+                if (!current.choices || choiceIndex < 0 || choiceIndex >= current.choices.length) return;
+
+                const chosen = current.choices[choiceIndex];
+
+                if (chosen.requiredBonus > 0 && this.state.bonuses < chosen.requiredBonus) {
+                    this.dom.puzzleMessage.className = "mt-2 text-sm font-semibold text-red-400";
+                    this.dom.puzzleMessage.textContent = `НЕДОСТАТОЧНО ЧИПОВ! Требуется: ${chosen.requiredBonus}, у Вас: ${this.state.bonuses}`;
+                    return;
+                }
+                
+                this.updateLog(`Выбран вариант: "${chosen.text}"`);
+
+                if (chosen.effect) { this.applyEffect(chosen.effect); }
+                this.goToNextStep(chosen.next);
+            }
+            
+            handlePuzzleInput() {
+                const current = QUEST_STEPS[this.state.currentStepKey]; 
+                const input = this.dom.puzzleInput.value.trim();
+                const normalize = (str) => str.toLowerCase().replace(/[^a-zа-я0-9]/g, '');
+                const normalizedInput = normalize(input); 
+                
+                let isCorrect = false;
+                let message = "";
+                this.dom.puzzleMessage.textContent = "";
+
+                switch (current.type) {
+                    case "logic_puzzle": case "speed_quiz": case "reaction_quiz":
+                        isCorrect = normalizedInput === normalize(current.correctAnswer);
+                        break;
+                    case "believe":
+                        if (normalizedInput === "верно" || normalizedInput === "неверно") {
+                            isCorrect = (normalizedInput === "верно") === current.correctAnswerBool;
+                        } else {
+                            message = "Ошибка! Введите 'верно' или 'неверно'.";
+                        }
+                        break;
+                }
+                
+                if (message) {
+                    this.dom.puzzleMessage.className = "mt-2 text-sm font-semibold text-red-400";
+                    this.dom.puzzleMessage.textContent = message;
+                    return;
+                }
+
+                this.dom.puzzleInput.value = '';
+                this.updateLog(`Введен ответ: "${input}"`);
+
+                if (isCorrect) {
+                    this.clearStepTimer();
+                    this.dom.puzzleMessage.className = 'mt-2 text-sm font-semibold text-neon';
+                    this.dom.puzzleMessage.textContent = "УСПЕХ! Протокол принят.";
+                    setTimeout(() => { this.goToNextStep(current.successNext); }, 1000);
+                    return;
+                }
+
+                if (current.type === "speed_quiz" || current.type === "reaction_quiz") {
+                    this.clearStepTimer(); 
+                    this.applyEffect(Effect(-1, 0, 0, 0)); 
+                    this.dom.puzzleMessage.className = 'mt-2 text-sm font-semibold text-red-400';
+                    this.dom.puzzleMessage.textContent = `ОШИБКА! (-1 Жизнь). Пропуск задания.`;
+                    setTimeout(() => { this.goToNextStep(current.failureNext || current.successNext); }, 1000);
+                    return;
+                }
+                
+                if (current.type === "logic_puzzle" || current.type === "believe") {
+                    this.clearStepTimer();
+                    this.state.currentPuzzle = current.key; 
+                    this.state.currentPuzzleSuccessNext = current.successNext; 
+                    this.dom.puzzleMessage.textContent = `НЕВЕРНО!`;
+                    setTimeout(() => { this.goToNextStep("logic_failure_decision"); }, 1000);
+                }
+            }
+
+            handleFinalCheck() {
+                this.goToNextStep(this.state.moralScore < 5 ? "game_ending_bad" : "game_win");
+            }
+            
+            handleFinalBranchSelector() {
+                const history = this.state.routeHistory;
+                let nextStepKey = "final_task_H_start"; 
+                if (history.hub1 === 'lab' && history.hub2 === 'tunnels') {
+                    nextStepKey = "final_task_G_start";
+                    this.updateLog("ОПТИМИЗИРОВАННЫЙ путь (Вирусная Угроза).", true);
+                } else {
+                    this.updateLog("РИСКОВАННЫЙ путь (Аппаратный Сбой).", true);
+                }
+                this.goToNextStep(nextStepKey);
+            }
+
+            renderStep() {
+                const current = this.getCurrentStep();
+                if (!current) return;
+                
+                this.dom.stepKey.textContent = current.key.toUpperCase();
+                this.dom.stepText.innerHTML = current.text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+                this.dom.choices.innerHTML = '';
+                this.dom.puzzleContainer.classList.add('hidden');
+                this.dom.puzzleMessage.textContent = '';
+                
+                if (current.key !== "logic_failure_decision") {
+                    this.updateLog(`Новый сценарий: ${current.key.toUpperCase()}`, false);
+                }
+
+                if (current.type.endsWith("scenario") || current.key === "logic_failure_decision") {
+                    this.clearStepTimer();
+                    current.choices.forEach((choice, index) => {
+                        const button = document.createElement('button');
+                        const isAvailable = choice.requiredBonus <= this.state.bonuses;
+                        const requiredText = choice.requiredBonus > 0 ? ` (Требуется: ${choice.requiredBonus} Чипов)` : '';
+                        
+                        button.className = `w-full btn-primary py-3 px-4 rounded-lg text-left ${isAvailable ? '' : 'disabled'}`;
+                        button.textContent = `${index + 1}. ${choice.text}${requiredText}`;
+                        button.disabled = !isAvailable;
+                        button.onclick = () => this.handleChoice(index);
+                        this.dom.choices.appendChild(button);
+                    });
+                } 
+                else if (current.type === "final_branch_selector") {
+                    this.handleFinalBranchSelector();
+                }
+                else if (current.type.endsWith("puzzle") || current.type === "believe" || current.type === "speed_quiz" || current.type === "reaction_quiz") {
+                    this.dom.puzzleContainer.classList.remove('hidden');
+                    let hint = "";
+                    this.dom.puzzleInput.value = '';
+
+                    if (current.type === "believe") { hint = "Введите 'верно' или 'неверно'"; } 
+                    else if (current.type === "speed_quiz" || current.type === "reaction_quiz") {
+                        hint = `❗ ВРЕМЯ ОГРАНИЧЕНО: ${current.timeLimit} сек.`;
+                        
+                        this.state.stepTimeRemaining = current.timeLimit;
+                        this.dom.stepTimerDisplay.textContent = `Таймер: ${this.state.stepTimeRemaining} с.`;
+                        this.dom.stepTimerDisplay.classList.remove('hidden');
+
+                        this.state.stepTimerInterval = setInterval(() => {
+                            this.state.stepTimeRemaining--;
+                            this.dom.stepTimerDisplay.textContent = `Таймер: ${this.state.stepTimeRemaining} с.`;
+                        }, 1000);
+
+                        this.state.stepTimer = setTimeout(() => {
+                            this.updateLog(`Время на ответ вышло! (-1 Жизнь)`, true);
+                            this.applyEffect(Effect(-1, 0, 0, 0));
+                            this.goToNextStep(current.failureNext);
+                        }, current.timeLimit * 1000);
+                    } else { hint = "Введите ваш ответ (одно слово или короткое предложение)."; }
+                    this.dom.puzzleHint.textContent = hint;
+                    this.dom.puzzleInput.focus();
+                }
+                else if (current.type === "final_check_moral") { this.handleFinalCheck(); }
+            }
+            
+            renderFinalScreen() {
+                if (this.state.timer) clearInterval(this.state.timer);
+                this.clearStepTimer();
+                this.dom.finalScreen.classList.remove('hidden');
+                
+                const isWin = QUEST_STEPS[this.state.currentStepKey].type === "final_win";
+                this.dom.finalTitle.textContent = isWin ? "ПОБЕДА: СИГНАЛ ОТПРАВЛЕН" : "ПОРАЖЕНИЕ: КОНЕЦ ИГРЫ";
+                this.dom.finalTitle.className = `text-5xl font-extrabold mb-4 ${isWin ? 'text-neon' : 'text-red-500'}`;
+
+                let finalTimeDisplay = this.formatTime(this.getElapsedTime());
+
+                this.dom.finalText.textContent = QUEST_STEPS[this.state.currentStepKey].text;
+                this.dom.finalStats.innerHTML = `
+                    ⏱️ Время в пути: <span class="text-neon">${finalTimeDisplay}</span><br>
+                    ❤️ Оставшиеся жизни: <span class="text-red-400">${this.state.lives}</span><br>
+                    Моральный рейтинг: <span class="text-indigo-400">${this.state.moralScore}</span>
+                `;
+            }
+
+            start() {
+                this.updateUI();
+                this.renderStep();
+                this.state.timer = setInterval(() => {
+                    this.updateTime();
+                    if (this.checkGameOver()) { clearInterval(this.state.timer); }
+                }, 1000);
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            const game = new GameEngine();
+            game.start();
+        });
+    </script>
+</body>
+</html>
